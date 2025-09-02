@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Three.js — Points Only</title>
+    <link rel="stylesheet" href="./index.css">
+</head>
+
+<body>
+    <canvas id="canvas"></canvas>
+
+    <!-- import map so the examples jsm can resolve the bare 'three' specifier -->
+    <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.179.1/build/three.module.js" } }
+  </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'https://unpkg.com/three@0.179.1/examples/jsm/controls/OrbitControls.js';
+        import { EffectComposer } from 'https://unpkg.com/three@0.179.1/examples/jsm/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'https://unpkg.com/three@0.179.1/examples/jsm/postprocessing/RenderPass.js';
+        import { ShaderPass } from 'https://unpkg.com/three@0.179.1/examples/jsm/postprocessing/ShaderPass.js';
+
+        const canvas = document.getElementById('canvas');
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+        renderer.setPixelRatio(window.devicePixelRatio || 1);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+
+        // --- scene / camera / controls (same as yours) ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111216);
+
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+        camera.position.set(0, 0, 6);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+        const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+        dir.position.set(5, 10, 7);
+        scene.add(dir);
+
+        // --- your points cloud function (unchanged) ---
+        function createPoints(count) {
+            const resolution = Math.max(2, Math.round(Math.cbrt(count)));
+            const spacing = 2 / resolution;
+            const posList = [];
+            const colList = [];
+
+            let i = 0;
+            const half = (resolution - 1) / 2;
+            const center = resolution / 2;
+            const isEven = (resolution % 2 === 0);
+            const centerLow = Math.floor(center) - (isEven ? 1 : 0);
+            const centerHigh = Math.floor(center);
+
+            for (let z = 0; z < resolution; z++) {
+                for (let y = 0; y < resolution; y++) {
+                    for (let x = 0; x < resolution; x++) {
+                        const isCenterX = (x === centerLow || x === centerHigh);
+                        const isCenterY = (y === centerLow || y === centerHigh);
+                        const isCenterZ = (z === centerLow || z === centerHigh);
+
+                        if (isCenterX || isCenterY || isCenterZ) continue;
+
+                        const px = (x - half) * spacing;
+                        const py = (y - half) * spacing;
+                        const pz = (z - half) * spacing;
+
+                        posList[i * 3] = px;
+                        posList[i * 3 + 1] = py;
+                        posList[i * 3 + 2] = pz;
+
+                        const t = (py / 1.2 + 1) * 0.5;
+                        colList[i * 3] = 0.2 + 0.8 * t;
+                        colList[i * 3 + 1] = 0.6 * (1 - t);
+                        colList[i * 3 + 2] = 0.9 * (0.5 + 0.5 * (1 - t));
+
+                        i++;
+                    }
+                }
+            }
+            const positions = new Float32Array(posList);
+            const colors = new Float32Array(colList);
+
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+            const mat = new THREE.PointsMaterial({
+                size: 0.05,
+                sizeAttenuation: true,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.95
+            });
+
+            return new THREE.Points(geom, mat);
+        }
+
+        const points = createPoints(20000);
+        scene.add(points);
+
+        // ----------------- Postprocessing setup ----------------- //
+        // A small example shader that warps the final image.
+        const ViewWarpShader = {
+            uniforms: {
+                tDiffuse: { value: null },    // the rendered scene texture
+                time: { value: 0 },
+                uEye: { value: new THREE.Vector3() }, // pass camera position or any vec3
+                uStrength: { value: 5.35 },    // warp strength
+                uTransition: { value: 0.0 }
+            },
+            vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform sampler2D tDiffuse;
+                uniform float time;
+                uniform float uStrength;
+                uniform float uTransition; // Our transition progress
+                varying vec2 vUv;
+
+                void main() {
+                    // --- Calculate the Swirled UV ---
+                    vec2 p = vUv - 0.5;
+                    float r = length(p);
+                    float angle = atan(p.y, p.x);
+                    float swirlAngle = time * 2.0 + uStrength * 2.0 / (r + 0.1);
+                    angle += swirlAngle;
+                    vec2 newP = vec2(cos(angle), sin(angle)) * r;
+                    vec2 swirledUv = newP + 0.5;
+
+                    // --- The Transition Logic ---
+                    // mix() interpolates between the original vUv and the swirledUv
+                    // based on the uTransition value.
+                    vec2 finalUv = mix(vUv, swirledUv, uTransition);
+
+                    gl_FragColor = texture2D(tDiffuse, finalUv);
+                }
+            `
+        };
+
+        // Create composer and passes
+        const composer = new EffectComposer(renderer);
+        const renderPass = new RenderPass(scene, camera);
+        composer.addPass(renderPass);
+
+        const warpPass = new ShaderPass(ViewWarpShader);
+        warpPass.renderToScreen = true;
+        composer.addPass(warpPass);
+
+        // -------------------------------------------------------- //
+
+        // animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            const t = performance.now() * 0.001;
+
+            points.rotation.y = t * 0.03;
+            points.rotation.x = Math.sin(t * 0.15) * 0.06;
+            controls.update();
+
+            // update shader uniforms
+            warpPass.uniforms.time.value = t;
+            // pass camera world position (or any camera-related info)
+            warpPass.uniforms.uEye.value.copy(camera.position);
+            warpPass.uniforms.uTransition.value = (Math.sin(t * 0.5) + 1.0) * 0.5;
+
+            // render through composer instead of renderer.render
+            composer.render();
+        }
+
+        animate();
+
+        // responsive
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+
+</body>
+
+</html>

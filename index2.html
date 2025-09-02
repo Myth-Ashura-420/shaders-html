@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Three.js — Points Only</title>
+    <link rel="stylesheet" href="./index.css">
+</head>
+
+<body>
+    <canvas id="canvas"></canvas>
+
+    <!-- import map so the examples jsm can resolve the bare 'three' specifier -->
+    <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.179.1/build/three.module.js" } }
+  </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'https://unpkg.com/three@0.179.1/examples/jsm/controls/OrbitControls.js';
+
+        const canvas = document.getElementById('canvas');
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+        renderer.setPixelRatio(window.devicePixelRatio || 1);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111216);
+
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+        camera.position.set(0, 0, 6);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        // lighting (subtle)
+        scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+        const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+        dir.position.set(5, 10, 7);
+        scene.add(dir);
+
+        function fibo(n) {
+            if (n <= 1) return n;
+            let a = 0, b = 1;
+            for (let i = 2; i <= n; i++) {
+                const next = a + b;
+                a = b;
+                b = next;
+            }
+            return b;
+        }
+
+
+        // Points cloud (only geometry left in this file)
+        function createPoints(count) {
+            const resolution = Math.max(2, Math.round(Math.cbrt(count)));
+            const total = resolution * resolution * resolution;
+            const spacing = 2 / resolution; // overall spread of points
+
+            const repeats = 2;   // how many small cubes per axis (try 2,3,4,...)
+            const mode = "planes"; // "planes" or "lines"
+
+            function makeCenterMask(resolution, repeats) {
+                const mask = new Uint8Array(resolution); // 1 if index is a center (in its block)
+                for (let idx = 0; idx < resolution; idx++) {
+                    // which block this index belongs to (evenly partitioned; last block can be larger)
+                    const blockIndex = Math.floor(idx * repeats / resolution);
+                    const blockStart = Math.floor(blockIndex * resolution / repeats);
+                    const blockEnd = Math.floor((blockIndex + 1) * resolution / repeats) - 1;
+                    const blockLen = blockEnd - blockStart + 1;
+
+                    // local center(s) inside this block
+                    const localCenterHigh = Math.floor(blockLen / 2);
+                    const localCenterLow = localCenterHigh - (blockLen % 2 === 0 ? 1 : 0);
+
+                    const centerLow = blockStart + localCenterLow;
+                    const centerHigh = blockStart + localCenterHigh;
+
+                    if (idx === centerLow || idx === centerHigh) mask[idx] = 1;
+                }
+                return mask;
+            }
+
+            const centerXMask = makeCenterMask(resolution, repeats);
+            const centerYMask = makeCenterMask(resolution, repeats);
+            const centerZMask = makeCenterMask(resolution, repeats);
+
+            // build positions/colors using the chosen mask logic
+            const posList = [];
+            const colList = [];
+            let i = 0;
+            const half = (resolution - 1) / 2;
+
+            for (let z = 0; z < resolution; z++) {
+                for (let y = 0; y < resolution; y++) {
+                    for (let x = 0; x < resolution; x++) {
+
+                        const isCenterX = !!centerXMask[x];
+                        const isCenterY = !!centerYMask[y];
+                        const isCenterZ = !!centerZMask[z];
+
+                        if (mode === "planes") {
+                            // remove center plane inside each sub-block
+                            if (isCenterX || isCenterY || isCenterZ) continue;
+                        } else {
+                            // mode === "lines": remove only cells on the center lines inside each sub-block
+                            const isCenterLine =
+                                (isCenterX && isCenterY) ||
+                                (isCenterX && isCenterZ) ||
+                                (isCenterY && isCenterZ);
+                            if (isCenterLine) continue;
+                        }
+
+                        const px = (x - half) * spacing;
+                        const py = (y - half) * spacing;
+                        const pz = (z - half) * spacing;
+
+                        posList[i * 3] = px;
+                        posList[i * 3 + 1] = py;
+                        posList[i * 3 + 2] = pz;
+
+                        const t = (py / 1.2 + 1) * 0.5;
+                        colList[i * 3] = 0.2 + 0.8 * t;
+                        colList[i * 3 + 1] = 0.6 * (1 - t);
+                        colList[i * 3 + 2] = 0.9 * (0.5 + 0.5 * (1 - t));
+
+                        i++;
+                    }
+                }
+            }
+
+            const positions = new Float32Array(posList);
+            const colors = new Float32Array(colList);
+
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+            const mat = new THREE.PointsMaterial({
+                size: 0.05,
+                sizeAttenuation: true,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.95
+            });
+
+            return new THREE.Points(geom, mat);
+        }
+
+        const points = createPoints(20000);
+        scene.add(points);
+
+        // animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            const t = performance.now() * 0.001;
+            points.rotation.y = t * 0.03;
+            points.rotation.x = Math.sin(t * 0.15) * 0.06;
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // responsive
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+
+</html>
