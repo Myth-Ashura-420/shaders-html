@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Three.js — Octant 1 highlight (light yellow translucent)</title>
+    <style>
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            background: #111216;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .ui {
+            position: fixed;
+            left: 12px;
+            top: 12px;
+            background: rgba(0, 0, 0, 0.45);
+            color: #fff;
+            padding: 8px;
+            border-radius: 8px;
+            font-family: system-ui, Arial;
+            font-size: 13px;
+            z-index: 10;
+        }
+
+        .ui label {
+            display: block;
+            margin: 4px 0;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="ui">
+        <label><input id="removeOct1" type="checkbox"> Remove Octant 1 entirely</label>
+        <label><input id="showOct1" type="checkbox" checked> Show Octant 1 (translucent)</label>
+        <button id="rebuild">Rebuild</button>
+    </div>
+
+    <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.179.1/build/three.module.js" } }
+  </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'https://unpkg.com/three@0.179.1/examples/jsm/controls/OrbitControls.js';
+
+        const canvas = document.getElementById('canvas');
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+        renderer.setPixelRatio(window.devicePixelRatio || 1);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111216);
+
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+        camera.position.set(0, 0, 6);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+        const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+        dir.position.set(5, 10, 7);
+        scene.add(dir);
+
+        const removeOct1Input = document.getElementById('removeOct1');
+        const showOct1Input = document.getElementById('showOct1');
+        const rebuildBtn = document.getElementById('rebuild');
+
+        function disposeGroup(g) {
+            if (!g) return;
+            g.children.forEach(c => {
+                if (c.geometry) c.geometry.dispose();
+                if (c.material) { Array.isArray(c.material) ? c.material.forEach(m => m.dispose()) : c.material.dispose(); }
+            });
+            scene.remove(g);
+        }
+
+        // Octant mapping used here:
+        // octant 1 = px > 0, py > 0, pz > 0
+        // octant 2 = px > 0, py > 0, pz > 0
+        // octant 3 = px > 0, py > 0, pz > 0
+        // octant 4 = px > 0, py > 0, pz > 0
+
+        // (points exactly on axes (==0) are considered not in any octant here)
+        function createPoints(count, { removeOct1 = false, showOct1 = true } = {}) {
+            const resolution = Math.max(2, Math.round(Math.cbrt(count)));
+            const spacing = 2 / resolution; // overall spread of points
+            const half = (resolution - 1) / 2;
+
+            const posRest = [], colRest = [];
+            const posOct1 = [], colOct1 = [];
+
+            // colors
+            const normalColor = [0.0, 0.0, 0.0];       // other points = black
+            const oct1Color = [1.0, 0.95, 0.6];        // light yellow for octant 1
+
+            for (let z = 0; z < resolution; z++) {
+                for (let y = 0; y < resolution; y++) {
+                    for (let x = 0; x < resolution; x++) {
+                        const px = (x - half) * spacing;
+                        const py = (y - half) * spacing;
+                        const pz = (z - half) * spacing;
+
+                        // determine octant membership (strict signs; if coordinate==0 treated as axis -> not in octant)
+                        const sx = px > 0 ? 1 : (px < 0 ? -1 : 0);
+                        const sy = py > 0 ? 1 : (py < 0 ? -1 : 0);
+                        const sz = pz > 0 ? 1 : (pz < 0 ? -1 : 0);
+
+                        const inOct1 = (sx === 1 && sy === 1 && sz === 1);
+
+                        if (inOct1 && !removeOct1) {
+                            posOct1.push(px, py, pz);
+                            colOct1.push(oct1Color[0], oct1Color[1], oct1Color[2]);
+                        } else {
+                            posRest.push(px, py, pz);
+                            colRest.push(normalColor[0], normalColor[1], normalColor[2]);
+                        }
+                    }
+                }
+            }
+
+            // Build rest geometry (opaque)
+            const geomRest = new THREE.BufferGeometry();
+            geomRest.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(posRest), 3));
+            geomRest.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(colRest), 3));
+            const matRest = new THREE.PointsMaterial({
+                size: 0.05,
+                sizeAttenuation: true,
+                vertexColors: true,
+                transparent: false,
+                opacity: 1.0
+            });
+            const restPoints = new THREE.Points(geomRest, matRest);
+
+            // Build octant1 geometry (translucent light yellow) unless removed
+            let oct1Points = null;
+            if (!removeOct1) {
+                const geomOct1 = new THREE.BufferGeometry();
+                geomOct1.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(posOct1), 3));
+                geomOct1.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(colOct1), 3));
+                const matOct1 = new THREE.PointsMaterial({
+                    size: 0.05,
+                    sizeAttenuation: true,
+                    vertexColors: true,
+                    transparent: showOct1,
+                    opacity: showOct1 ? 0.25 : 1.0,
+                    depthWrite: showOct1 ? false : true
+                });
+                oct1Points = new THREE.Points(geomOct1, matOct1);
+            }
+
+            const group = new THREE.Group();
+            group.add(restPoints);
+            if (oct1Points) group.add(oct1Points);
+            return group;
+        }
+
+        // initial add
+        let pointsGroup = createPoints(20000, { removeOct1: false, showOct1: true });
+        scene.add(pointsGroup);
+
+        function rebuild() {
+            disposeGroup(pointsGroup);
+            pointsGroup = createPoints(20000, { removeOct1: removeOct1Input.checked, showOct1: showOct1Input.checked });
+            scene.add(pointsGroup);
+        }
+
+        rebuildBtn.addEventListener('click', rebuild);
+        // also auto-rebuild on checkbox change
+        removeOct1Input.addEventListener('change', rebuild);
+        showOct1Input.addEventListener('change', rebuild);
+
+        // animate
+        function animate() {
+            requestAnimationFrame(animate);
+            const t = performance.now() * 0.001;
+            if (pointsGroup) {
+                // pointsGroup.rotation.y = t * 0.03;
+                // pointsGroup.rotation.x = Math.sin(t * 0.15) * 0.06;
+            }
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+
+</html>
